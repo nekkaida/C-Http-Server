@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <ctype.h>
 
 // Function to extract the path from an HTTP request
 char* extract_path(char* request) {
@@ -46,6 +47,53 @@ char* extract_echo_string(const char* path) {
     strcpy(echo_str, start);
     
     return echo_str;
+}
+
+// Function to extract a header value from an HTTP request
+char* extract_header_value(const char* request, const char* header_name) {
+    static char value[1024];
+    memset(value, 0, sizeof(value));
+    
+    // Create the header string to search for (case-insensitive)
+    char search_header[1024];
+    sprintf(search_header, "\r\n%s: ", header_name);
+    
+    // Convert search header to lowercase for case-insensitive search
+    for (int i = 0; search_header[i]; i++) {
+        search_header[i] = tolower(search_header[i]);
+    }
+    
+    // Create lowercase version of request for searching
+    char* lower_request = strdup(request);
+    for (int i = 0; lower_request[i]; i++) {
+        lower_request[i] = tolower(lower_request[i]);
+    }
+    
+    // Look for the header
+    char* header_pos = strstr(lower_request, search_header);
+    if (header_pos) {
+        // Calculate the position in the original request
+        int offset = header_pos - lower_request;
+        
+        // Get position after the header name and colon
+        const char* value_start = request + offset + strlen(search_header);
+        
+        // Find the end of the value (marked by CRLF)
+        const char* value_end = strstr(value_start, "\r\n");
+        if (value_end) {
+            // Calculate the value length
+            int value_length = value_end - value_start;
+            
+            // Extract the value
+            strncpy(value, value_start, value_length);
+            value[value_length] = '\0';
+        }
+    }
+    
+    // Free the temporary lowercase request
+    free(lower_request);
+    
+    return value;
 }
 
 int main() {
@@ -131,6 +179,18 @@ int main() {
             
             send(client_fd, response, strlen(response), 0);
             printf("Sent echo response with string: %s\n", echo_str);
+        } else if (strcmp(path, "/user-agent") == 0) {
+            // User-Agent endpoint
+            char* user_agent = extract_header_value(buffer, "User-Agent");
+            int user_agent_len = strlen(user_agent);
+            
+            // Create response with Content-Type and Content-Length headers
+            char response[2048];
+            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                    user_agent_len, user_agent);
+            
+            send(client_fd, response, strlen(response), 0);
+            printf("Sent user-agent response: %s\n", user_agent);
         } else {
             // Any other path - return 404 Not Found
             const char *response = "HTTP/1.1 404 Not Found\r\n\r\n";
