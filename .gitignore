@@ -1,0 +1,63 @@
+# Compiled binary
+http_server
+*.exe
+*.out
+*.app
+
+# Object files
+*.o
+*.ko
+*.obj
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Dependencies
+*.d
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# IDE specific files
+.vscode/
+.vs/
+*.swp
+*.swo
+*~
+
+# Build directory
+build/
+debug/
+release/
+
+# Test files
+test/
+*.test
+
+# Log files
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+files/
+uploads/
