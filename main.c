@@ -30,6 +30,24 @@ char* extract_path(char* request) {
     return path;
 }
 
+// Function to check if a path starts with a specific prefix
+int path_starts_with(const char* path, const char* prefix) {
+    return strncmp(path, prefix, strlen(prefix)) == 0;
+}
+
+// Function to extract the echo string from path
+char* extract_echo_string(const char* path) {
+    static char echo_str[1024];
+    
+    // Skip "/echo/" prefix
+    const char* start = path + 6; // 6 is the length of "/echo/"
+    
+    // Copy the rest of the path
+    strcpy(echo_str, start);
+    
+    return echo_str;
+}
+
 int main() {
     // Disable output buffering
     setbuf(stdout, NULL);
@@ -96,17 +114,29 @@ int main() {
         printf("Extracted path: %s\n", path);
         
         // Determine the appropriate response based on the path
-        const char *response;
         if (strcmp(path, "/") == 0) {
-            response = "HTTP/1.1 200 OK\r\n\r\n";
-            printf("Sending 200 OK response\n");
+            // Root path - return 200 OK
+            const char *response = "HTTP/1.1 200 OK\r\n\r\n";
+            send(client_fd, response, strlen(response), 0);
+            printf("Sent 200 OK response for root path\n");
+        } else if (path_starts_with(path, "/echo/")) {
+            // Echo endpoint
+            char* echo_str = extract_echo_string(path);
+            int echo_len = strlen(echo_str);
+            
+            // Create response with Content-Type and Content-Length headers
+            char response[2048];
+            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                    echo_len, echo_str);
+            
+            send(client_fd, response, strlen(response), 0);
+            printf("Sent echo response with string: %s\n", echo_str);
         } else {
-            response = "HTTP/1.1 404 Not Found\r\n\r\n";
-            printf("Sending 404 Not Found response\n");
+            // Any other path - return 404 Not Found
+            const char *response = "HTTP/1.1 404 Not Found\r\n\r\n";
+            send(client_fd, response, strlen(response), 0);
+            printf("Sent 404 Not Found response\n");
         }
-        
-        // Send the HTTP response
-        send(client_fd, response, strlen(response), 0);
         
         // Close the client socket
         close(client_fd);
