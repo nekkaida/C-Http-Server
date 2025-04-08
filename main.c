@@ -131,6 +131,18 @@ char* extract_header_value(const char* request, const char* header_name) {
     return value;
 }
 
+// Function to check if client supports gzip encoding
+int client_supports_gzip(const char* request) {
+    char* accept_encoding = extract_header_value(request, "Accept-Encoding");
+    
+    // Check if gzip is in the Accept-Encoding header
+    if (strstr(accept_encoding, "gzip") != NULL) {
+        return 1;
+    }
+    
+    return 0;
+}
+
 // Function to extract the request body from an HTTP request
 char* extract_request_body(char* request, int* body_length) {
     char* body_start = strstr(request, "\r\n\r\n");
@@ -168,6 +180,10 @@ void handle_client(int client_fd) {
     char* path = extract_path(buffer);
     printf("Extracted path: %s\n", path);
     
+    // Check if client supports gzip
+    int supports_gzip = client_supports_gzip(buffer);
+    printf("Client supports gzip: %s\n", supports_gzip ? "Yes" : "No");
+    
     // Check if it's a POST request
     int is_post = is_post_request(buffer);
     
@@ -184,8 +200,17 @@ void handle_client(int client_fd) {
         
         // Create response with Content-Type and Content-Length headers
         char response[2048];
-        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
-                echo_len, echo_str);
+        
+        if (supports_gzip) {
+            // For now, just add the Content-Encoding header
+            // In future stages, we'll actually compress the content
+            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n%s", 
+                    echo_len, echo_str);
+        } else {
+            // Standard response without compression
+            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                    echo_len, echo_str);
+        }
         
         send(client_fd, response, strlen(response), 0);
         printf("PID %d: Sent echo response with string: %s\n", getpid(), echo_str);
@@ -196,8 +221,16 @@ void handle_client(int client_fd) {
         
         // Create response with Content-Type and Content-Length headers
         char response[2048];
-        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
-                user_agent_len, user_agent);
+        
+        if (supports_gzip) {
+            // For now, just add the Content-Encoding header
+            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n%s", 
+                    user_agent_len, user_agent);
+        } else {
+            // Standard response without compression
+            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                    user_agent_len, user_agent);
+        }
         
         send(client_fd, response, strlen(response), 0);
         printf("PID %d: Sent user-agent response: %s\n", getpid(), user_agent);
@@ -254,8 +287,16 @@ void handle_client(int client_fd) {
                 
                 // Create response headers
                 char headers[1024];
-                sprintf(headers, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", 
-                        file_size);
+                
+                if (supports_gzip) {
+                    // For now, just add the Content-Encoding header
+                    sprintf(headers, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Encoding: gzip\r\nContent-Length: %ld\r\n\r\n", 
+                            file_size);
+                } else {
+                    // Standard response without compression
+                    sprintf(headers, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", 
+                            file_size);
+                }
                 
                 // Send headers
                 send(client_fd, headers, strlen(headers), 0);
