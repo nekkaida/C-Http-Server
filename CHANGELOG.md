@@ -1,0 +1,61 @@
+- Create socket with AF_INET and SOCK_STREAM
+- Configure SO_REUSEADDR to handle server restarts
+- Bind socket to all interfaces (INADDR_ANY) on port 4221
+- Add error handling for socket operations
+- Add buffer to read HTTP request from client
+- Implement simple HTTP/1.1 200 OK response
+- Send response back to client
+- Add debug logging for request/response cycle
+- Add buffer to read HTTP request from client
+- Implement simple HTTP/1.1 200 OK response
+- Send response back to client
+- Add debug logging for request/response cycle
+- Add extract_path() function to parse GET request URLs
+- Handle path extraction from HTTP request buffer
+- Add null termination and bounds checking
+- Add debug logging for extracted paths
+- Add path_starts_with() helper to check URL prefixes
+- Add extract_echo_string() to parse content after /echo/
+- Add Content-Type and Content-Length headers for echo responses
+- Return request path content as response body
+- Add debug logging for echo responses
+- Add extract_header_value() function for case-insensitive header parsing
+- Handle /user-agent route to return User-Agent header value
+- Add Content-Type and Content-Length headers in response
+- Implement memory management for header parsing
+- Add debug logging for User-Agent responses
+- Add fork() to create child process per connection
+- Implement SIGCHLD handler to reap zombie processes
+- Add proper socket descriptor management in parent/child
+- Close unused file descriptors in both processes
+- Add debug logging for process creation and management
+- Set SA_RESTART flag to handle interrupted system calls
+- Add --directory flag parsing for configurable file root
+- Add /files/{filename} route handler
+- Implement file reading and streaming to client
+- Add proper HTTP headers (Content-Type, Content-Length)
+- Return 404 for non-existent files
+- Add security checks for file paths
+- Implement proper file descriptor management
+- Add debug logging for file operations
+- Add POST request handling for /files/{filename}
+- Implement Content-Length header parsing
+- Add request body extraction function
+- Create files with correct permissions (0644)
+- Return 201 Created on success
+- Return 400 Bad Request for missing/empty body
+- Return 500 for file creation failures
+- Add logging for file operations and errors
+- Add client_supports_gzip() to check Accept-Encoding header
+- Add Content-Encoding: gzip header for supported clients
+- Modify /echo, /user-agent, and /files responses to include compression headers
+- Add header parsing helper functions
+- Add debug logging for compression support detection
+- Add zlib dependency for gzip compression
+- Add gzip_compress() helper function for data compression
+- Implement client_supports_gzip() to check Accept-Encoding header
+- Add Content-Encoding: gzip header for compressed responses
+- Implement compression for /echo, /user-agent, and /files endpoints
+- Add fallback to uncompressed responses
+- Add memory management for compression buffers
+- Add debug logging for compression operations
