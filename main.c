@@ -9,6 +9,11 @@
 #include <ctype.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
+// Global variable to store the directory path
+char *files_directory = NULL;
 
 // Function to extract the path from an HTTP request
 char* extract_path(char* request) {
@@ -49,6 +54,19 @@ char* extract_echo_string(const char* path) {
     strcpy(echo_str, start);
     
     return echo_str;
+}
+
+// Function to extract the filename from a /files/ path
+char* extract_filename(const char* path) {
+    static char filename[1024];
+    
+    // Skip "/files/" prefix
+    const char* start = path + 7; // 7 is the length of "/files/"
+    
+    // Copy the rest of the path
+    strcpy(filename, start);
+    
+    return filename;
 }
 
 // Function to extract a header value from an HTTP request
@@ -147,6 +165,48 @@ void handle_client(int client_fd) {
         
         send(client_fd, response, strlen(response), 0);
         printf("PID %d: Sent user-agent response: %s\n", getpid(), user_agent);
+    } else if (path_starts_with(path, "/files/") && files_directory != NULL) {
+        // Files endpoint
+        char* filename = extract_filename(path);
+        
+        // Create the full file path
+        char filepath[2048];
+        sprintf(filepath, "%s/%s", files_directory, filename);
+        
+        // Try to open the file
+        int fd = open(filepath, O_RDONLY);
+        if (fd == -1) {
+            // File not found - return 404
+            const char *response = "HTTP/1.1 404 Not Found\r\n\r\n";
+            send(client_fd, response, strlen(response), 0);
+            printf("PID %d: Sent 404 Not Found response for file: %s\n", getpid(), filename);
+        } else {
+            // Get file size
+            struct stat file_stat;
+            fstat(fd, &file_stat);
+            off_t file_size = file_stat.st_size;
+            
+            // Create response headers
+            char headers[1024];
+            sprintf(headers, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", 
+                    file_size);
+            
+            // Send headers
+            send(client_fd, headers, strlen(headers), 0);
+            
+            // Send file content
+            char file_buffer[4096];
+            ssize_t bytes_read;
+            
+            while ((bytes_read = read(fd, file_buffer, sizeof(file_buffer))) > 0) {
+                send(client_fd, file_buffer, bytes_read, 0);
+            }
+            
+            // Close file
+            close(fd);
+            
+            printf("PID %d: Sent file: %s (size: %ld bytes)\n", getpid(), filename, file_size);
+        }
     } else {
         // Any other path - return 404 Not Found
         const char *response = "HTTP/1.1 404 Not Found\r\n\r\n";
@@ -159,13 +219,22 @@ void handle_client(int client_fd) {
     exit(0);  // Child process exits after handling the request
 }
 
-int main() {
+int main(int argc, char *argv[]) {
     // Disable output buffering
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
 
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     printf("Logs from your program will appear here!\n");
+    
+    // Parse command line arguments for --directory flag
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--directory") == 0 && i + 1 < argc) {
+            files_directory = argv[i + 1];
+            printf("Directory for files set to: %s\n", files_directory);
+            break;
+        }
+    }
     
     // Set up signal handler for SIGCHLD to reap zombie processes
     struct sigaction sa;
