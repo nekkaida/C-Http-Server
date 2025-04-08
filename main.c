@@ -11,47 +11,107 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <zlib.h> // Add zlib for gzip compression
+#include <stdint.h>
 
 // Global variable to store the directory path
 char *files_directory = NULL;
 
-// Function to compress data using gzip
-// Returns the size of compressed data and updates the provided buffer
-unsigned long gzip_compress(char* dest, unsigned long* dest_len, const char* source, unsigned long source_len) {
-    z_stream strm;
+// CRC32 table for gzip footer
+static uint32_t crc_table[256];
+
+// Initialize CRC32 table
+void init_crc_table() {
+    for (int i = 0; i < 256; i++) {
+        uint32_t c = i;
+        for (int j = 0; j < 8; j++) {
+            if (c & 1)
+                c = 0xEDB88320 ^ (c >> 1);
+            else
+                c = c >> 1;
+        }
+        crc_table[i] = c;
+    }
+}
+
+// Calculate CRC32 for a buffer
+uint32_t calc_crc32(uint32_t crc, const unsigned char *buf, size_t len) {
+    crc = ~crc;
+    while (len--) {
+        crc = crc_table[(crc ^ *buf) & 0xFF] ^ (crc >> 8);
+        buf++;
+    }
+    return ~crc;
+}
+
+// Function to create a basic gzip file in memory
+// This creates the simplest possible gzip format without compression
+// Returns the size of the gzipped data
+unsigned long simple_gzip(char* dest, const char* source, unsigned long source_len) {
+    unsigned char *d = (unsigned char*)dest;
+    const unsigned char *s = (const unsigned char*)source;
     
-    // Initialize the z_stream struct
-    strm.zalloc = Z_NULL;
-    strm.zfree = Z_NULL;
-    strm.opaque = Z_NULL;
-    
-    // Initialize gzip compression with default compression level
-    if (deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 
-                    31, // 15 + 16 for gzip format
-                    8, Z_DEFAULT_STRATEGY) != Z_OK) {
-        fprintf(stderr, "Failed to initialize zlib for compression\n");
-        return 0;
+    // Initialize CRC table if not done yet
+    static int crc_initialized = 0;
+    if (!crc_initialized) {
+        init_crc_table();
+        crc_initialized = 1;
     }
     
-    strm.avail_in = source_len;
-    strm.next_in = (Bytef*)source;
-    strm.avail_out = *dest_len;
-    strm.next_out = (Bytef*)dest;
+    // Calculate CRC32 and length
+    uint32_t crc = calc_crc32(0, s, source_len);
+    uint32_t len = source_len;
     
-    // Compress the data
-    deflate(&strm, Z_FINISH);
+    // Gzip header (10 bytes)
+    // Magic number (ID1, ID2)
+    *d++ = 0x1f;
+    *d++ = 0x8b;
+    // Compression method (8 = deflate)
+    *d++ = 8;
+    // Flags (0 = no extra fields)
+    *d++ = 0;
+    // Modification time (4 bytes, set to 0)
+    *d++ = 0;
+    *d++ = 0;
+    *d++ = 0;
+    *d++ = 0;
+    // Extra flags (2 = max compression)
+    *d++ = 2;
+    // Operating system (255 = unknown)
+    *d++ = 255;
     
-    // Calculate size of compressed data
-    unsigned long compressed_size = *dest_len - strm.avail_out;
+    // Store uncompressed data
+    // In a real implementation, this is where deflate compressed data would go
+    // For this simple implementation, we're storing uncompressed data with minimal headers
     
-    // Clean up
-    deflateEnd(&strm);
+    // Add a stored block header
+    // 1 byte: last block (1) + type (00 = stored)
+    *d++ = 0x01;
+    // 2 bytes: length
+    *d++ = len & 0xff;
+    *d++ = (len >> 8) & 0xff;
+    // 2 bytes: one's complement of length
+    *d++ = (~len) & 0xff;
+    *d++ = (~len >> 8) & 0xff;
     
-    // Update the output buffer size
-    *dest_len = compressed_size;
+    // Copy the data
+    memcpy(d, s, len);
+    d += len;
     
-    return compressed_size;
+    // Gzip footer (8 bytes)
+    // CRC32 (4 bytes)
+    *d++ = crc & 0xff;
+    *d++ = (crc >> 8) & 0xff;
+    *d++ = (crc >> 16) & 0xff;
+    *d++ = (crc >> 24) & 0xff;
+    
+    // Input size modulo 2^32 (4 bytes)
+    *d++ = len & 0xff;
+    *d++ = (len >> 8) & 0xff;
+    *d++ = (len >> 16) & 0xff;
+    *d++ = (len >> 24) & 0xff;
+    
+    // Return total size
+    return (d - (unsigned char*)dest);
 }
 
 // Function to extract the path from an HTTP request
@@ -238,9 +298,9 @@ void handle_client(int client_fd) {
         int echo_len = strlen(echo_str);
         
         if (supports_gzip) {
-            // Prepare buffers for compression
-            unsigned long compressed_size = 4096; // Initial size guess
-            char* compressed_data = malloc(compressed_size);
+            // Prepare buffers for compression - allocate enough space
+            // Simple gzip adds about 20 bytes of overhead
+            char* compressed_data = malloc(echo_len + 32);
             
             if (compressed_data == NULL) {
                 // Failed to allocate memory
@@ -249,7 +309,7 @@ void handle_client(int client_fd) {
                 printf("PID %d: Failed to allocate memory for compression\n", getpid());
             } else {
                 // Compress the echo string
-                compressed_size = gzip_compress(compressed_data, &compressed_size, echo_str, echo_len);
+                unsigned long compressed_size = simple_gzip(compressed_data, echo_str, echo_len);
                 
                 if (compressed_size > 0) {
                     // Create response with Content-Type, Content-Encoding, and correct Content-Length headers
@@ -293,8 +353,7 @@ void handle_client(int client_fd) {
         
         if (supports_gzip) {
             // Prepare buffers for compression
-            unsigned long compressed_size = 4096; // Initial size guess
-            char* compressed_data = malloc(compressed_size);
+            char* compressed_data = malloc(user_agent_len + 32);
             
             if (compressed_data == NULL) {
                 // Failed to allocate memory
@@ -303,7 +362,7 @@ void handle_client(int client_fd) {
                 printf("PID %d: Failed to allocate memory for compression\n", getpid());
             } else {
                 // Compress the user agent string
-                compressed_size = gzip_compress(compressed_data, &compressed_size, user_agent, user_agent_len);
+                unsigned long compressed_size = simple_gzip(compressed_data, user_agent, user_agent_len);
                 
                 if (compressed_size > 0) {
                     // Create response with Content-Type, Content-Encoding, and correct Content-Length headers
@@ -417,8 +476,7 @@ void handle_client(int client_fd) {
                     }
                     
                     // Prepare buffers for compression
-                    unsigned long compressed_size = file_size * 2; // Initial size guess (larger than file)
-                    char* compressed_data = malloc(compressed_size);
+                    char* compressed_data = malloc(file_size + 32);
                     
                     if (compressed_data == NULL) {
                         // Failed to allocate memory for compression
@@ -430,7 +488,7 @@ void handle_client(int client_fd) {
                     }
                     
                     // Compress the file content
-                    compressed_size = gzip_compress(compressed_data, &compressed_size, file_content, file_size);
+                    unsigned long compressed_size = simple_gzip(compressed_data, file_content, file_size);
                     
                     if (compressed_size > 0) {
                         // Create response with Content-Type, Content-Encoding, and correct Content-Length headers
