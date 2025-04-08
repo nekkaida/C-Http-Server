@@ -22,7 +22,7 @@ char* extract_path(char* request) {
     // Initialize path buffer
     memset(path, 0, sizeof(path));
     
-    // Check if this is a GET request
+    // Check if this is a GET or POST request
     if (strncmp(request, "GET ", 4) == 0) {
         // Find the end of the path (marked by space before HTTP version)
         char* path_end = strchr(request + 4, ' ');
@@ -33,9 +33,24 @@ char* extract_path(char* request) {
             strncpy(path, request + 4, path_length);
             path[path_length] = '\0';
         }
+    } else if (strncmp(request, "POST ", 5) == 0) {
+        // Find the end of the path (marked by space before HTTP version)
+        char* path_end = strchr(request + 5, ' ');
+        if (path_end) {
+            // Calculate the path length
+            int path_length = path_end - (request + 5);
+            // Extract the path
+            strncpy(path, request + 5, path_length);
+            path[path_length] = '\0';
+        }
     }
     
     return path;
+}
+
+// Function to determine if the request is a POST request
+int is_post_request(char* request) {
+    return strncmp(request, "POST ", 5) == 0;
 }
 
 // Function to check if a path starts with a specific prefix
@@ -116,6 +131,24 @@ char* extract_header_value(const char* request, const char* header_name) {
     return value;
 }
 
+// Function to extract the request body from an HTTP request
+char* extract_request_body(char* request, int* body_length) {
+    char* body_start = strstr(request, "\r\n\r\n");
+    if (body_start) {
+        body_start += 4; // Skip the \r\n\r\n
+        
+        // Get the Content-Length header
+        char* content_length_str = extract_header_value(request, "Content-Length");
+        if (content_length_str[0] != '\0') {
+            *body_length = atoi(content_length_str);
+            return body_start;
+        }
+    }
+    
+    *body_length = 0;
+    return NULL;
+}
+
 // Handler for SIGCHLD to reap child processes
 void handle_sigchld(int sig) {
     // Reap all dead processes
@@ -125,7 +158,7 @@ void handle_sigchld(int sig) {
 // Function to handle a client connection
 void handle_client(int client_fd) {
     // Buffer to store the received HTTP request
-    char buffer[1024] = {0};
+    char buffer[4096] = {0};
     
     // Read the HTTP request
     read(client_fd, buffer, sizeof(buffer) - 1);
@@ -134,6 +167,9 @@ void handle_client(int client_fd) {
     // Extract the path from the request
     char* path = extract_path(buffer);
     printf("Extracted path: %s\n", path);
+    
+    // Check if it's a POST request
+    int is_post = is_post_request(buffer);
     
     // Determine the appropriate response based on the path
     if (strcmp(path, "/") == 0) {
@@ -173,39 +209,70 @@ void handle_client(int client_fd) {
         char filepath[2048];
         sprintf(filepath, "%s/%s", files_directory, filename);
         
-        // Try to open the file
-        int fd = open(filepath, O_RDONLY);
-        if (fd == -1) {
-            // File not found - return 404
-            const char *response = "HTTP/1.1 404 Not Found\r\n\r\n";
-            send(client_fd, response, strlen(response), 0);
-            printf("PID %d: Sent 404 Not Found response for file: %s\n", getpid(), filename);
-        } else {
-            // Get file size
-            struct stat file_stat;
-            fstat(fd, &file_stat);
-            off_t file_size = file_stat.st_size;
+        if (is_post) {
+            // POST request - create a new file
+            int body_length = 0;
+            char* body = extract_request_body(buffer, &body_length);
             
-            // Create response headers
-            char headers[1024];
-            sprintf(headers, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", 
-                    file_size);
-            
-            // Send headers
-            send(client_fd, headers, strlen(headers), 0);
-            
-            // Send file content
-            char file_buffer[4096];
-            ssize_t bytes_read;
-            
-            while ((bytes_read = read(fd, file_buffer, sizeof(file_buffer))) > 0) {
-                send(client_fd, file_buffer, bytes_read, 0);
+            if (body && body_length > 0) {
+                // Open file for writing
+                int fd = open(filepath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (fd == -1) {
+                    // Failed to create file
+                    const char *response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                    send(client_fd, response, strlen(response), 0);
+                    printf("PID %d: Failed to create file: %s\n", getpid(), filename);
+                } else {
+                    // Write the request body to the file
+                    write(fd, body, body_length);
+                    close(fd);
+                    
+                    // Return 201 Created
+                    const char *response = "HTTP/1.1 201 Created\r\n\r\n";
+                    send(client_fd, response, strlen(response), 0);
+                    printf("PID %d: Created file: %s (size: %d bytes)\n", getpid(), filename, body_length);
+                }
+            } else {
+                // Bad request - missing or empty body
+                const char *response = "HTTP/1.1 400 Bad Request\r\n\r\n";
+                send(client_fd, response, strlen(response), 0);
+                printf("PID %d: Bad request - missing or empty body\n", getpid());
             }
-            
-            // Close file
-            close(fd);
-            
-            printf("PID %d: Sent file: %s (size: %ld bytes)\n", getpid(), filename, file_size);
+        } else {
+            // GET request - read file
+            int fd = open(filepath, O_RDONLY);
+            if (fd == -1) {
+                // File not found - return 404
+                const char *response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                send(client_fd, response, strlen(response), 0);
+                printf("PID %d: Sent 404 Not Found response for file: %s\n", getpid(), filename);
+            } else {
+                // Get file size
+                struct stat file_stat;
+                fstat(fd, &file_stat);
+                off_t file_size = file_stat.st_size;
+                
+                // Create response headers
+                char headers[1024];
+                sprintf(headers, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", 
+                        file_size);
+                
+                // Send headers
+                send(client_fd, headers, strlen(headers), 0);
+                
+                // Send file content
+                char file_buffer[4096];
+                ssize_t bytes_read;
+                
+                while ((bytes_read = read(fd, file_buffer, sizeof(file_buffer))) > 0) {
+                    send(client_fd, file_buffer, bytes_read, 0);
+                }
+                
+                // Close file
+                close(fd);
+                
+                printf("PID %d: Sent file: %s (size: %ld bytes)\n", getpid(), filename, file_size);
+            }
         }
     } else {
         // Any other path - return 404 Not Found
