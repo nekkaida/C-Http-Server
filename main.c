@@ -11,9 +11,48 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <zlib.h> // Add zlib for gzip compression
 
 // Global variable to store the directory path
 char *files_directory = NULL;
+
+// Function to compress data using gzip
+// Returns the size of compressed data and updates the provided buffer
+unsigned long gzip_compress(char* dest, unsigned long* dest_len, const char* source, unsigned long source_len) {
+    z_stream strm;
+    
+    // Initialize the z_stream struct
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    
+    // Initialize gzip compression with default compression level
+    if (deflateInit2(&strm, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 
+                    31, // 15 + 16 for gzip format
+                    8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        fprintf(stderr, "Failed to initialize zlib for compression\n");
+        return 0;
+    }
+    
+    strm.avail_in = source_len;
+    strm.next_in = (Bytef*)source;
+    strm.avail_out = *dest_len;
+    strm.next_out = (Bytef*)dest;
+    
+    // Compress the data
+    deflate(&strm, Z_FINISH);
+    
+    // Calculate size of compressed data
+    unsigned long compressed_size = *dest_len - strm.avail_out;
+    
+    // Clean up
+    deflateEnd(&strm);
+    
+    // Update the output buffer size
+    *dest_len = compressed_size;
+    
+    return compressed_size;
+}
 
 // Function to extract the path from an HTTP request
 char* extract_path(char* request) {
@@ -198,42 +237,109 @@ void handle_client(int client_fd) {
         char* echo_str = extract_echo_string(path);
         int echo_len = strlen(echo_str);
         
-        // Create response with Content-Type and Content-Length headers
-        char response[2048];
-        
         if (supports_gzip) {
-            // For now, just add the Content-Encoding header
-            // In future stages, we'll actually compress the content
-            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n%s", 
-                    echo_len, echo_str);
+            // Prepare buffers for compression
+            unsigned long compressed_size = 4096; // Initial size guess
+            char* compressed_data = malloc(compressed_size);
+            
+            if (compressed_data == NULL) {
+                // Failed to allocate memory
+                const char *response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                send(client_fd, response, strlen(response), 0);
+                printf("PID %d: Failed to allocate memory for compression\n", getpid());
+            } else {
+                // Compress the echo string
+                compressed_size = gzip_compress(compressed_data, &compressed_size, echo_str, echo_len);
+                
+                if (compressed_size > 0) {
+                    // Create response with Content-Type, Content-Encoding, and correct Content-Length headers
+                    char response_headers[1024];
+                    sprintf(response_headers, 
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %lu\r\n\r\n", 
+                            compressed_size);
+                    
+                    // Send headers
+                    send(client_fd, response_headers, strlen(response_headers), 0);
+                    
+                    // Send compressed data
+                    send(client_fd, compressed_data, compressed_size, 0);
+                    
+                    printf("PID %d: Sent gzip-compressed echo response with string: %s (original size: %d, compressed: %lu)\n", 
+                           getpid(), echo_str, echo_len, compressed_size);
+                } else {
+                    // Compression failed, fallback to uncompressed
+                    char response[2048];
+                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                            echo_len, echo_str);
+                    send(client_fd, response, strlen(response), 0);
+                    printf("PID %d: Compression failed, sent uncompressed echo response: %s\n", getpid(), echo_str);
+                }
+                
+                // Free the compressed data buffer
+                free(compressed_data);
+            }
         } else {
             // Standard response without compression
+            char response[2048];
             sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
                     echo_len, echo_str);
+            send(client_fd, response, strlen(response), 0);
+            printf("PID %d: Sent uncompressed echo response: %s\n", getpid(), echo_str);
         }
-        
-        send(client_fd, response, strlen(response), 0);
-        printf("PID %d: Sent echo response with string: %s\n", getpid(), echo_str);
     } else if (strcmp(path, "/user-agent") == 0) {
         // User-Agent endpoint
         char* user_agent = extract_header_value(buffer, "User-Agent");
         int user_agent_len = strlen(user_agent);
         
-        // Create response with Content-Type and Content-Length headers
-        char response[2048];
-        
         if (supports_gzip) {
-            // For now, just add the Content-Encoding header
-            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\n\r\n%s", 
-                    user_agent_len, user_agent);
+            // Prepare buffers for compression
+            unsigned long compressed_size = 4096; // Initial size guess
+            char* compressed_data = malloc(compressed_size);
+            
+            if (compressed_data == NULL) {
+                // Failed to allocate memory
+                const char *response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                send(client_fd, response, strlen(response), 0);
+                printf("PID %d: Failed to allocate memory for compression\n", getpid());
+            } else {
+                // Compress the user agent string
+                compressed_size = gzip_compress(compressed_data, &compressed_size, user_agent, user_agent_len);
+                
+                if (compressed_size > 0) {
+                    // Create response with Content-Type, Content-Encoding, and correct Content-Length headers
+                    char response_headers[1024];
+                    sprintf(response_headers, 
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: %lu\r\n\r\n", 
+                            compressed_size);
+                    
+                    // Send headers
+                    send(client_fd, response_headers, strlen(response_headers), 0);
+                    
+                    // Send compressed data
+                    send(client_fd, compressed_data, compressed_size, 0);
+                    
+                    printf("PID %d: Sent gzip-compressed user-agent response: %s (original size: %d, compressed: %lu)\n", 
+                           getpid(), user_agent, user_agent_len, compressed_size);
+                } else {
+                    // Compression failed, fallback to uncompressed
+                    char response[2048];
+                    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                            user_agent_len, user_agent);
+                    send(client_fd, response, strlen(response), 0);
+                    printf("PID %d: Compression failed, sent uncompressed user-agent response: %s\n", getpid(), user_agent);
+                }
+                
+                // Free the compressed data buffer
+                free(compressed_data);
+            }
         } else {
             // Standard response without compression
+            char response[2048];
             sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
                     user_agent_len, user_agent);
+            send(client_fd, response, strlen(response), 0);
+            printf("PID %d: Sent user-agent response: %s\n", getpid(), user_agent);
         }
-        
-        send(client_fd, response, strlen(response), 0);
-        printf("PID %d: Sent user-agent response: %s\n", getpid(), user_agent);
     } else if (path_starts_with(path, "/files/") && files_directory != NULL) {
         // Files endpoint
         char* filename = extract_filename(path);
@@ -285,34 +391,104 @@ void handle_client(int client_fd) {
                 fstat(fd, &file_stat);
                 off_t file_size = file_stat.st_size;
                 
-                // Create response headers
-                char headers[1024];
-                
-                if (supports_gzip) {
-                    // For now, just add the Content-Encoding header
-                    sprintf(headers, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Encoding: gzip\r\nContent-Length: %ld\r\n\r\n", 
-                            file_size);
+                if (supports_gzip && file_size > 0) {
+                    // Read the file content into memory
+                    char* file_content = malloc(file_size);
+                    if (file_content == NULL) {
+                        // Failed to allocate memory
+                        const char *response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                        send(client_fd, response, strlen(response), 0);
+                        printf("PID %d: Failed to allocate memory for file: %s\n", getpid(), filename);
+                        close(fd);
+                        return;
+                    }
+                    
+                    // Read file content
+                    ssize_t bytes_read = read(fd, file_content, file_size);
+                    close(fd);
+                    
+                    if (bytes_read != file_size) {
+                        // Failed to read the entire file
+                        const char *response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                        send(client_fd, response, strlen(response), 0);
+                        printf("PID %d: Failed to read entire file: %s\n", getpid(), filename);
+                        free(file_content);
+                        return;
+                    }
+                    
+                    // Prepare buffers for compression
+                    unsigned long compressed_size = file_size * 2; // Initial size guess (larger than file)
+                    char* compressed_data = malloc(compressed_size);
+                    
+                    if (compressed_data == NULL) {
+                        // Failed to allocate memory for compression
+                        const char *response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                        send(client_fd, response, strlen(response), 0);
+                        printf("PID %d: Failed to allocate memory for compression\n", getpid());
+                        free(file_content);
+                        return;
+                    }
+                    
+                    // Compress the file content
+                    compressed_size = gzip_compress(compressed_data, &compressed_size, file_content, file_size);
+                    
+                    if (compressed_size > 0) {
+                        // Create response with Content-Type, Content-Encoding, and correct Content-Length headers
+                        char response_headers[1024];
+                        sprintf(response_headers, 
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Encoding: gzip\r\nContent-Length: %lu\r\n\r\n", 
+                                compressed_size);
+                        
+                        // Send headers
+                        send(client_fd, response_headers, strlen(response_headers), 0);
+                        
+                        // Send compressed data
+                        send(client_fd, compressed_data, compressed_size, 0);
+                        
+                        printf("PID %d: Sent gzip-compressed file: %s (original size: %ld, compressed: %lu)\n", 
+                               getpid(), filename, file_size, compressed_size);
+                    } else {
+                        // Compression failed, fallback to uncompressed
+                        char response_headers[1024];
+                        sprintf(response_headers, 
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", 
+                                file_size);
+                        
+                        // Send headers
+                        send(client_fd, response_headers, strlen(response_headers), 0);
+                        
+                        // Send file content
+                        send(client_fd, file_content, file_size, 0);
+                        
+                        printf("PID %d: Compression failed, sent uncompressed file: %s (size: %ld bytes)\n", 
+                               getpid(), filename, file_size);
+                    }
+                    
+                    // Free memory
+                    free(file_content);
+                    free(compressed_data);
                 } else {
                     // Standard response without compression
+                    char headers[1024];
                     sprintf(headers, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: %ld\r\n\r\n", 
                             file_size);
+                    
+                    // Send headers
+                    send(client_fd, headers, strlen(headers), 0);
+                    
+                    // Send file content
+                    char file_buffer[4096];
+                    ssize_t bytes_read;
+                    
+                    while ((bytes_read = read(fd, file_buffer, sizeof(file_buffer))) > 0) {
+                        send(client_fd, file_buffer, bytes_read, 0);
+                    }
+                    
+                    // Close file
+                    close(fd);
+                    
+                    printf("PID %d: Sent file: %s (size: %ld bytes)\n", getpid(), filename, file_size);
                 }
-                
-                // Send headers
-                send(client_fd, headers, strlen(headers), 0);
-                
-                // Send file content
-                char file_buffer[4096];
-                ssize_t bytes_read;
-                
-                while ((bytes_read = read(fd, file_buffer, sizeof(file_buffer))) > 0) {
-                    send(client_fd, file_buffer, bytes_read, 0);
-                }
-                
-                // Close file
-                close(fd);
-                
-                printf("PID %d: Sent file: %s (size: %ld bytes)\n", getpid(), filename, file_size);
             }
         }
     } else {
