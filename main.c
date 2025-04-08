@@ -7,6 +7,8 @@
 #include <errno.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 // Function to extract the path from an HTTP request
 char* extract_path(char* request) {
@@ -96,6 +98,67 @@ char* extract_header_value(const char* request, const char* header_name) {
     return value;
 }
 
+// Handler for SIGCHLD to reap child processes
+void handle_sigchld(int sig) {
+    // Reap all dead processes
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
+// Function to handle a client connection
+void handle_client(int client_fd) {
+    // Buffer to store the received HTTP request
+    char buffer[1024] = {0};
+    
+    // Read the HTTP request
+    read(client_fd, buffer, sizeof(buffer) - 1);
+    printf("Received request:\n%s\n", buffer);
+    
+    // Extract the path from the request
+    char* path = extract_path(buffer);
+    printf("Extracted path: %s\n", path);
+    
+    // Determine the appropriate response based on the path
+    if (strcmp(path, "/") == 0) {
+        // Root path - return 200 OK
+        const char *response = "HTTP/1.1 200 OK\r\n\r\n";
+        send(client_fd, response, strlen(response), 0);
+        printf("PID %d: Sent 200 OK response for root path\n", getpid());
+    } else if (path_starts_with(path, "/echo/")) {
+        // Echo endpoint
+        char* echo_str = extract_echo_string(path);
+        int echo_len = strlen(echo_str);
+        
+        // Create response with Content-Type and Content-Length headers
+        char response[2048];
+        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                echo_len, echo_str);
+        
+        send(client_fd, response, strlen(response), 0);
+        printf("PID %d: Sent echo response with string: %s\n", getpid(), echo_str);
+    } else if (strcmp(path, "/user-agent") == 0) {
+        // User-Agent endpoint
+        char* user_agent = extract_header_value(buffer, "User-Agent");
+        int user_agent_len = strlen(user_agent);
+        
+        // Create response with Content-Type and Content-Length headers
+        char response[2048];
+        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
+                user_agent_len, user_agent);
+        
+        send(client_fd, response, strlen(response), 0);
+        printf("PID %d: Sent user-agent response: %s\n", getpid(), user_agent);
+    } else {
+        // Any other path - return 404 Not Found
+        const char *response = "HTTP/1.1 404 Not Found\r\n\r\n";
+        send(client_fd, response, strlen(response), 0);
+        printf("PID %d: Sent 404 Not Found response\n", getpid());
+    }
+    
+    // Close the client socket
+    close(client_fd);
+    exit(0);  // Child process exits after handling the request
+}
+
 int main() {
     // Disable output buffering
     setbuf(stdout, NULL);
@@ -103,6 +166,16 @@ int main() {
 
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     printf("Logs from your program will appear here!\n");
+    
+    // Set up signal handler for SIGCHLD to reap zombie processes
+    struct sigaction sa;
+    sa.sa_handler = handle_sigchld;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+        perror("sigaction");
+        exit(1);
+    }
     
     int server_fd, client_fd, client_addr_len;
     struct sockaddr_in client_addr;
@@ -137,7 +210,7 @@ int main() {
         return 1;
     }
     
-    printf("Waiting for a client to connect...\n");
+    printf("Server started. Waiting for connections...\n");
     
     while (1) {
         client_addr_len = sizeof(client_addr);
@@ -148,58 +221,27 @@ int main() {
             continue;
         }
         
-        printf("Client connected\n");
+        printf("Client connected - spawning child process\n");
         
-        // Buffer to store the received HTTP request
-        char buffer[1024] = {0};
+        // Fork a child process to handle the client
+        pid_t pid = fork();
         
-        // Read the HTTP request
-        read(client_fd, buffer, sizeof(buffer) - 1);
-        printf("Received request:\n%s\n", buffer);
-        
-        // Extract the path from the request
-        char* path = extract_path(buffer);
-        printf("Extracted path: %s\n", path);
-        
-        // Determine the appropriate response based on the path
-        if (strcmp(path, "/") == 0) {
-            // Root path - return 200 OK
-            const char *response = "HTTP/1.1 200 OK\r\n\r\n";
-            send(client_fd, response, strlen(response), 0);
-            printf("Sent 200 OK response for root path\n");
-        } else if (path_starts_with(path, "/echo/")) {
-            // Echo endpoint
-            char* echo_str = extract_echo_string(path);
-            int echo_len = strlen(echo_str);
-            
-            // Create response with Content-Type and Content-Length headers
-            char response[2048];
-            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
-                    echo_len, echo_str);
-            
-            send(client_fd, response, strlen(response), 0);
-            printf("Sent echo response with string: %s\n", echo_str);
-        } else if (strcmp(path, "/user-agent") == 0) {
-            // User-Agent endpoint
-            char* user_agent = extract_header_value(buffer, "User-Agent");
-            int user_agent_len = strlen(user_agent);
-            
-            // Create response with Content-Type and Content-Length headers
-            char response[2048];
-            sprintf(response, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", 
-                    user_agent_len, user_agent);
-            
-            send(client_fd, response, strlen(response), 0);
-            printf("Sent user-agent response: %s\n", user_agent);
+        if (pid < 0) {
+            // Fork failed
+            printf("Fork failed: %s\n", strerror(errno));
+            close(client_fd);
+            continue;
+        } else if (pid == 0) {
+            // Child process
+            close(server_fd);  // Child doesn't need the server socket
+            handle_client(client_fd);
+            // Child process exits in handle_client function
         } else {
-            // Any other path - return 404 Not Found
-            const char *response = "HTTP/1.1 404 Not Found\r\n\r\n";
-            send(client_fd, response, strlen(response), 0);
-            printf("Sent 404 Not Found response\n");
+            // Parent process
+            close(client_fd);  // Parent doesn't need the client socket
+            printf("Created child process with PID: %d\n", pid);
+            // Parent continues to accept new connections
         }
-        
-        // Close the client socket
-        close(client_fd);
     }
     
     // Close the server socket
